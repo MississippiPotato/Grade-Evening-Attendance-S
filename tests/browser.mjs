@@ -202,9 +202,34 @@ try {
   assert.equal(record.data.name, "测试甲");
 
   const awayBrowser = await context();
+  await awayBrowser.addInitScript(() => {
+    const request = {calls: 0, userGesture: false, reject: null};
+    window.testLocationRequest = request;
+    Object.defineProperty(navigator.geolocation, "getCurrentPosition", {configurable: true, value(_resolve, reject) {
+      request.calls++;
+      request.userGesture = navigator.userActivation.isActive;
+      request.reject = reject;
+    }});
+  });
   const away = await pageAt(awayBrowser, "login.html");
   await login(away, "student", "测试乙", "002");
   await click(away, "去填报");
+  const awayDialog = away.getByRole("dialog");
+  const onsite = awayDialog.getByRole("button", {name: /^是，我在校/});
+  assert.equal(await away.evaluate(() => window.testLocationRequest.calls), 0);
+  await onsite.click();
+  await includes(awayDialog.getByRole("status"), "系统会自动继续打卡");
+  assert.deepEqual(await away.evaluate(() => {
+    const {calls, userGesture} = window.testLocationRequest;
+    return {calls, userGesture};
+  }), {calls: 1, userGesture: true});
+  await away.evaluate(() => window.testLocationRequest.reject({code: 1}));
+  await includes(awayDialog, "尚未允许定位");
+
+  await away.evaluate(() => { delete navigator.geolocation.getCurrentPosition; });
+  await awayBrowser.grantPermissions([], {origin: base});
+  await onsite.click();
+  await includes(awayDialog, "请在浏览器的站点权限中允许访问位置");
   await away.getByRole("button", {name: /^否，我不在校/}).click();
   await away.getByLabel("离校原因").fill("在外参加活动\n次日返校。");
   await click(away, "确认报备");
