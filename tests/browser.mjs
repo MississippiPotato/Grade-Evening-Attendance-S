@@ -94,7 +94,11 @@ try {
         range.selectNodeContents(element);
         return range.getClientRects().length;
       }), 1);
-      if (role === "login") assert.equal(await page.getByText(/A 加姓名/).count(), 0);
+      if (role === "login" || role === "index") {
+        await page.waitForURL("**/login.html");
+        assert.equal(await page.getByText(/A 加姓名/).count(), 0);
+        await includes(page, "用户名即姓名，密码即学号");
+      }
       await page.screenshot({path: path.join(artifacts, role + "-" + width + ".png"), fullPage: true});
       if (role === "student" && width === 390) {
         await click(page, "去填报");
@@ -137,6 +141,11 @@ try {
 
   await includes(admin, "系统预设");
   const defaultBoundary = JSON.parse(await fs.readFile(new URL("../dist/assets/tangdaowan-boundary.geojson", import.meta.url), "utf8"));
+  const callTasks = async (page, suffix = "", body) => {
+    const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem("upc-attendance-online-session-v1")).token);
+    return fetch(base + "/api/tasks" + suffix, {method: body ? "POST" : "GET",
+      headers: {Authorization: "Bearer " + token, ...(body ? {"Content-Type": "application/json"} : {})}, body: JSON.stringify(body)});
+  };
 
   await click(admin, "新建任务");
   assert.ok(await admin.getByRole("checkbox", {name: "唐岛湾校区", exact: true}).isChecked());
@@ -151,25 +160,28 @@ try {
   assert.equal(await admin.getByLabel("任务标题").inputValue(), "多设备验收任务");
   await click(admin, "预览发布");
   await includes(admin.getByRole("dialog"), "应报人数");
-  await click(admin, "确认发布");
-  const taskFile = await download(admin, "下载任务包");
-  const classFile = await download(admin, "下载该班应报名单");
-  await admin.getByLabel("应报名单班级").selectOption("测试2402");
-  const otherClass = await download(admin, "下载该班应报名单");
-  await click(admin, "关闭");
-  const task = JSON.parse(await fs.readFile(taskFile, "utf8"));
-  assert.deepEqual(task.data.fences, [{name: "唐岛湾校区", version: defaultBoundary.properties.version,
-    buffer: 20, maxAccuracy: 70, geometry: defaultBoundary.geometry}]);
-  assert.deepEqual(task.data.groups, ["测试2401", "测试2402"]);
-  assert.equal(JSON.stringify(task.data).includes("测试甲"), false);
   await includes(leader, "暂无班级任务");
-
-  await upload(leader, "导入文件", [classFile, taskFile]);
-  await includes(leader, "测试甲");
-  await upload(leader, "导入文件", otherClass, false);
-  await includes(leader.getByRole("dialog"), "该文件不属于你负责的班级");
-  await click(leader, "关闭");
-  await upload(student, "导入任务", taskFile);
+  await click(admin, "确认发布");
+  await includes(admin, "任务已发布");
+  assert.deepEqual(await admin.getByRole("button", {name: "下载发布文件", exact: true}).count(), 0);
+  const published = (await (await callTasks(admin)).json()).items[0];
+  const task = published.task;
+  assert.deepEqual(task.fences, [{name: "唐岛湾校区", version: defaultBoundary.properties.version,
+    buffer: 20, maxAccuracy: 70, geometry: defaultBoundary.geometry}]);
+  assert.deepEqual(task.groups, ["测试2401", "测试2402"]);
+  assert.equal(published.snapshots.length, 2);
+  assert.equal((await callTasks(student, "", task)).status, 403);
+  const restricted = {...task, id: "only-other-class", title: "其他班级专用任务", groups: ["测试2402"],
+    opens: new Date(Date.now() + 1800000).toISOString()};
+  assert.equal((await callTasks(admin, "", restricted)).status, 201);
+  const studentTasks = (await (await callTasks(student)).json()).items;
+  const leaderTasks = (await (await callTasks(leader)).json()).items;
+  assert.deepEqual(studentTasks.map(item => item.task.id), [task.id]);
+  assert.deepEqual(studentTasks[0].snapshots, []);
+  assert.deepEqual(leaderTasks.map(item => item.task.id), [task.id]);
+  assert.deepEqual(leaderTasks[0].snapshots.map(snapshot => snapshot.group), ["测试2401"]);
+  await includes(leader.locator("#student-rows"), "测试甲");
+  await includes(student, "多设备验收任务");
   await includes(student, "打卡回执会自动使用以上学籍信息。");
 
   await click(leader, "提醒");
@@ -192,7 +204,6 @@ try {
   const awayBrowser = await context();
   const away = await pageAt(awayBrowser, "login.html");
   await login(away, "student", "测试乙", "002");
-  await upload(away, "导入任务", taskFile);
   await click(away, "去填报");
   await away.getByRole("button", {name: /^否，我不在校/}).click();
   await away.getByLabel("离校原因").fill("在外参加活动\n次日返校。");
@@ -236,24 +247,23 @@ try {
 
   await click(admin, "延长截止");
   await click(admin, "保存新版本");
-  const updated = await download(admin, "下载任务包");
-  assert.equal(JSON.parse(await fs.readFile(updated, "utf8")).data.revision, 2);
-  await click(admin, "关闭");
+  await includes(admin, "截止时间已更新");
+  const updated = (await (await callTasks(student)).json()).items[0].task;
+  assert.equal(updated.revision, 2);
+  assert.ok(updated.due > task.due);
   await click(admin, "撤销任务");
   await click(admin, "确认撤销");
-  const revoked = await download(admin, "下载撤销通知");
-  const cancellation = JSON.parse(await fs.readFile(revoked, "utf8"));
-  assert.equal(cancellation.data.mode, "revoked");
-  assert.equal(cancellation.data.revision, 3);
+  await admin.locator("#live").filter({hasText: "任务已撤销"}).waitFor();
+  const cancellation = (await (await callTasks(student)).json()).items[0].task;
+  assert.equal(cancellation.mode, "revoked");
+  assert.equal(cancellation.revision, 3);
   await click(student, "关闭");
-  await upload(student, "导入任务", revoked, false);
-  await click(student.getByRole("dialog"), "确认导入");
-  await includes(student.getByRole("dialog"), "已撤销");
-  await click(student, "关闭");
+  await click(student, "刷新任务");
+  await includes(student, "任务已撤销");
   await click(student, "本机数据");
   const backup = await download(student, "下载本机备份");
   assert.equal(JSON.parse(await fs.readFile(backup, "utf8")).data.workspace.receipts.length, 1);
-  await student.getByLabel("可清理的已结束任务").selectOption(task.data.id);
+  await student.getByLabel("可清理的已结束任务").selectOption(task.id);
   await click(student, "选择清理任务");
   await click(student, "确认清理");
   await click(student, "关闭");
@@ -262,13 +272,12 @@ try {
   await click(student, "关闭");
   await click(student, "退出登录");
   await student.waitForURL("**/login.html");
-  await student.goto(base + "/student.html#task=" + task.data.id);
+  await student.goto(base + "/student.html#task=" + task.id);
   await student.waitForURL("**/login.html?task=*");
   await login(student, "student", "测试甲", "001");
   await includes(student.getByRole("dialog"), "已撤销");
   await click(leader, "退出登录");
   await leader.waitForURL("**/login.html");
-  await click(admin, "关闭");
   await click(admin, "退出登录");
   await admin.waitForURL("**/login.html");
   assert.deepEqual(errors, []);

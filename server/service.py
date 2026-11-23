@@ -17,6 +17,7 @@ from threading import BoundedSemaphore
 import time
 import unicodedata
 from urllib.parse import urlsplit
+import task_service
 
 ID = re.compile(r"[a-zA-Z0-9_-]{1,80}")
 TOKEN = re.compile(r"[0-9a-f]{64}")
@@ -66,6 +67,7 @@ def connect(path):
 def initialize(path):
     with closing(connect(path)) as db:
         db.executescript(SCHEMA)
+        db.executescript(task_service.SCHEMA)
 
 
 def digest(value):
@@ -136,9 +138,9 @@ class Handler(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
-    def body(self):
+    def body(self, maximum=8192):
         size = self.headers.get("Content-Length", "")
-        if not size.isdecimal() or not 0 < int(size) <= 8192 or self.headers.get_content_type() != "application/json":
+        if not size.isdecimal() or not 0 < int(size) <= maximum or self.headers.get_content_type() != "application/json":
             raise RequestError(400, "请求格式无效。")
         try:
             data = json.loads(self.rfile.read(int(size)))
@@ -217,7 +219,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise RequestError(409, "消息编号已存在。")
         return {"id": message_id}
 
-    def api(self, path, method):
+    def api(self, path, method, query):
         origin = self.headers.get("Origin")
         if origin and origin not in self.server.origins:
             raise RequestError(403, "访问来源未获授权。")
@@ -235,6 +237,17 @@ class Handler(BaseHTTPRequestHandler):
                 with db:
                     db.execute("DELETE FROM sessions WHERE hash=?", (hashed,))
                 return 204, None
+            if path == "/tasks" and method == "GET":
+                return 200, task_service.feed(db, account, query)
+            if path == "/tasks" and method == "POST":
+                if account["role"] != "admin":
+                    raise RequestError(403, "仅管理员可发布点名任务。")
+                return 201, task_service.publish(db, account, self.body(1_000_000), now_iso())
+            task_action = re.fullmatch(r"/tasks/([a-zA-Z0-9_-]{1,80})/(extend|revoke)", path)
+            if task_action and method == "POST":
+                if account["role"] != "admin":
+                    raise RequestError(403, "仅管理员可更改点名任务。")
+                return 200, task_service.update(db, account, task_action.group(1), task_action.group(2), self.body(), now_iso())
             if path == "/special" and method == "POST":
                 if account["role"] != "leader":
                     raise RequestError(403, "仅班级负责人可报送特殊情况。")
@@ -274,15 +287,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self, method):
         try:
-            path = urlsplit(self.path).path
+            url = urlsplit(self.path)
+            path = url.path
             marker = next((item for item in ("/attendance-api/", "/api/") if path.startswith(item)), None)
             if marker:
-                self.respond(*self.api(path[len(marker)-1:], method))
+                self.respond(*self.api(path[len(marker)-1:], method, url.query))
             elif method == "GET":
                 self.static(path)
             else:
                 raise RequestError(404, "接口不存在。")
-        except RequestError as error:
+        except (RequestError, task_service.TaskError) as error:
             self.respond(error.status, {"error": str(error)})
         except (BrokenPipeError, ConnectionResetError):
             return
