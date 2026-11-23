@@ -7,6 +7,10 @@
 /outputs/
 /private/
 /local-data/
+*.sqlite3
+*.sqlite3-*
+pepper.bin
+管理员新密码.txt
 attendance-accounts*/
 学生/
 班级负责人/
