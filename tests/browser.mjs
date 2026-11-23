@@ -87,6 +87,14 @@ try {
     const scope = await context({viewport: {width, height}, isMobile: width < 800});
     for (const role of ["index", "student", "leader", "admin", "login"]) {
       const page = await pageAt(scope, role + ".html" + (role === "login" ? "" : "?demo=1"));
+      const school = page.locator(".brand strong");
+      assert.equal(await school.innerText(), "青岛软件学院、计算机科学与技术学院");
+      assert.equal(await school.evaluate(element => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        return range.getClientRects().length;
+      }), 1);
+      if (role === "login") assert.equal(await page.getByText(/A 加姓名/).count(), 0);
       await page.screenshot({path: path.join(artifacts, role + "-" + width + ".png"), fullPage: true});
       if (role === "student" && width === 390) {
         await click(page, "去填报");
