@@ -3,6 +3,7 @@
 from datetime import datetime
 import json
 import math
+from pathlib import Path
 import re
 from urllib.parse import parse_qs
 
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS attendance_submissions (
  sequence INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES published_tasks(id), student_id TEXT NOT NULL,
  class_name TEXT NOT NULL, student_name TEXT NOT NULL, revision INTEGER NOT NULL, submitted_at TEXT NOT NULL,
  result TEXT NOT NULL CHECK(result IN ('away', 'present')), reason TEXT, campus TEXT, accuracy REAL,
+ location TEXT,
  UNIQUE(task_id, student_id)
 );
 CREATE INDEX IF NOT EXISTS attendance_submissions_class ON attendance_submissions(class_name, sequence);
@@ -34,6 +36,21 @@ INSERT OR IGNORE INTO attendance_submissions
  SELECT sequence,task_id,student_id,class_name,student_name,revision,submitted_at,'away',reason FROM away_submissions;
 """
 CAMPUS_NAMES = ("唐岛湾校区", "古镇口校区", "东营科教园区")
+CAMPUS_ADDRESSES = {
+    "唐岛湾校区": "青岛市黄岛区长江西路66号",
+    "古镇口校区": "青岛市黄岛区三沙路1006号",
+    "东营科教园区": "东营市东营区北一路739号",
+}
+with Path(__file__).with_name("campus-places.json").open(encoding="utf-8") as source:
+    CAMPUS_PLACES = json.load(source)["campuses"]
+
+
+def initialize(db):
+    db.executescript(SCHEMA)
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        if not any(column["name"] == "location" for column in db.execute("PRAGMA table_info(attendance_submissions)")):
+            db.execute("ALTER TABLE attendance_submissions ADD COLUMN location TEXT")
 
 
 class TaskError(Exception):
@@ -143,6 +160,8 @@ def feed_cursor(query, name):
 def attendance_record(row):
     result = row["result"]
     details = {"reason": row["reason"]} if result == "away" else {"campus": row["campus"], "accuracy": row["accuracy"]}
+    if result == "present" and row["location"]:
+        details["location"] = row["location"]
     return {"id": "online-" + result + "-" + str(row["sequence"]), "taskId": row["task_id"],
             "studentId": row["student_id"], "group": row["class_name"], "name": row["student_name"],
             "revision": row["revision"], "submittedAt": row["submitted_at"], "result": result, **details}
@@ -189,6 +208,8 @@ def ring_distance(ring, longitude, latitude):
     meters_per_degree = 6371008.8 * math.pi / 180
     scale_x = meters_per_degree * math.cos(math.radians(latitude))
     points = [((lon - longitude) * scale_x, (lat - latitude) * meters_per_degree) for lon, lat in ring]
+    if len(points) == 1:
+        return False, math.hypot(*points[0])
     inside, minimum = False, float("inf")
     for (ax, ay), (bx, by) in zip(points, points[1:]):
         dx, dy = bx - ax, by - ay
@@ -216,19 +237,32 @@ def campus_for(fences, longitude, latitude, accuracy):
     return None
 
 
+def location_for(campus, longitude, latitude):
+    candidates = []
+    for name, kind, path in CAMPUS_PLACES[campus].values():
+        inside, distance = ring_distance(path, longitude, latitude)
+        if kind == "area" and inside:
+            distance = 0
+        if distance <= (35 if kind == "road" else 50):
+            candidates.append((distance, kind == "road", name))
+    if candidates:
+        return campus + " · " + min(candidates)[2] + "附近"
+    return campus + " · 校区地址 " + CAMPUS_ADDRESSES[campus]
+
+
 def submission_details(task, raw):
     if raw.get("result") == "away":
         reason = text(raw.get("reason"), 500, "请填写离校原因，最多 500 字。")
         require(not any(0xD800 <= ord(char) <= 0xDFFF for char in reason)
                 and len(reason.encode("utf-16-le")) <= 1000, "请填写有效的离校原因，最多 500 字。")
-        return "away", reason, None, None
+        return "away", reason, None, None, None
     require(raw.get("result") == "present", "填报类型无效。")
     longitude, latitude, accuracy = (raw.get(key) for key in ("longitude", "latitude", "accuracy"))
     require(number(longitude, -180, 180) and number(latitude, -90, 90)
             and number(accuracy, 0, 1000) and accuracy > 0, "定位信息无效，请重新定位。")
     campus = campus_for(task["fences"], longitude, latitude, accuracy)
     require(campus, "定位范围或精度未通过校验，请重新定位。")
-    return "present", None, campus, accuracy
+    return "present", None, campus, accuracy, location_for(campus, longitude, latitude)
 
 
 def submit_attendance(db, account, identifier, raw, clock):
@@ -251,8 +285,8 @@ def submit_attendance(db, account, identifier, raw, clock):
                 "该任务当前不接受报备，请刷新任务列表。", 409)
         details = submission_details(task, raw)
         result = db.execute("""INSERT INTO attendance_submissions
-                            (task_id,student_id,class_name,student_name,revision,submitted_at,result,reason,campus,accuracy)
-                            VALUES (?,?,?,?,?,?,?,?,?,?)""", (identifier, student_id, group, student["name"],
+                            (task_id,student_id,class_name,student_name,revision,submitted_at,result,reason,campus,accuracy,location)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (identifier, student_id, group, student["name"],
                                                               task["revision"], now, *details))
         return attendance_record(db.execute("SELECT * FROM attendance_submissions WHERE sequence=?", (result.lastrowid,)).fetchone())
 

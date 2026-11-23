@@ -67,7 +67,7 @@ def connect(path):
 def initialize(path):
     with closing(connect(path)) as db:
         db.executescript(SCHEMA)
-        db.executescript(task_service.SCHEMA)
+        task_service.initialize(db)
 
 
 def digest(value):

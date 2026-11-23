@@ -10,7 +10,7 @@
 
 | 角色 | 登录方式 | 办理事项 |
 | --- | --- | --- |
-| 学生 | 用户名为学籍姓名，密码为学号 | 在校时授权定位，校验通过后自动提交。离校时填写原因并提交。在任务详情查看提交结果。 |
+| 学生 | 用户名为学籍姓名，密码为学号 | 在校时授权定位，校验通过后自动提交并显示地点。离校时填写原因并提交。在任务详情查看提交结果。 |
 | 班级负责人 | 用户名为大写 `A` 加学籍姓名，密码为学号 | 查看本班打卡进度和学生明细，复制提醒链接，导出本班数据，在线报送特殊情况。 |
 | 管理员 | 使用部署时配置的账号 | 发布、延期或撤销任务，查看年级总览、各班打卡率和学生明细，导出年级汇总和学生明细，在站内「特殊情况邮箱」查收报送。 |
 
@@ -22,7 +22,8 @@
 
 - GitHub Pages 发布 `dist/` 中的网页、脚本和公开校园素材。账号、在线任务、打卡和报备数据保存在服务端的私有数据库中。负责人只可查看本班填报，学生只可查看自己的记录。
 - 浏览器使用 IndexedDB 保存当前账号的工作记录。退出登录后，本机工作记录仍保留。各端可从「本机数据」下载备份，并清理已截止或撤销任务的本机记录。
-- 选择在校打卡后，浏览器获取位置并按任务围栏初步判定。服务端通过 HTTPS 接收本次坐标，复核后只保存判定通过的校区和定位精度。
+- 选择在校打卡后，浏览器获取位置并按任务围栏初步判定。服务端通过 HTTPS 接收本次坐标，复核后在本地校园地名数据中查找附近的楼宇、校门、地标或道路。地图覆盖不足时显示校区官方地址。
+- 三端详情均可查看保存的地点名称，负责人导出的本班明细和管理员导出的学生明细包含「打卡地点」列。数据库保存地点名称、校区和定位精度。早期打卡记录只保留当时已有的校区信息。
 - 名册、账号文件、数据库、密钥、部署配置、回执、报送内容、统计导出和本机备份均应存放在源码仓库及发布目录之外。涉及个人信息的文件只在办理所需的人员之间私下交接。
 - `.gitignore` 覆盖常见私有数据目录和导出文件。提交前可用 `git diff --cached --name-only` 核对暂存文件。`.gitignore` 仅对未跟踪文件生效。
 
@@ -55,6 +56,7 @@ python server/service.py --db "../private/attendance/attendance.sqlite3" --peppe
 | `dist/` | 静态页面、应用模块和公开校园素材 |
 | `server/service.py` | 登录会话、任务 API 和特殊情况邮箱 |
 | `server/task_service.py` | 任务发布、班级可见范围和版本同步 |
+| `server/campus-places.json` | 服务端随代码部署的公开校园地名数据 |
 | `tools/seed_server.py` | 从工作簿初始化服务端名册和账号 |
 | `tests/` | 业务规则测试和三端浏览器测试 |
 
@@ -65,4 +67,5 @@ python server/service.py --db "../private/attendance/attendance.sqlite3" --peppe
 - 徽标来自学院官网页头。 [青岛软件学院、计算机科学与技术学院](https://computer.upc.edu.cn/)
 - 校园夜景为图说石大中的《夜间石大》，摄影肖鸿伟。 [靓丽风景](https://photo.upc.edu.cn/jlfj.htm)
 - 唐岛湾校区定位边界取自 OpenStreetMap way 222840628（v22），由 © OpenStreetMap contributors 提供，数据按 ODbL 1.0 分发。 [边界文件](dist/assets/tangdaowan-boundary.geojson) · [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/) · [学校平面图](https://upce.upc.edu.cn/2018/0404/c8300a143081/pagem.htm)
+- 校园地名数据来自 © OpenStreetMap contributors，按 ODbL 1.0 分发。文件以 OSM 要素编号标注来源。校区地址来自学校官网。 [校园地名数据](server/campus-places.json) · [OpenStreetMap 许可](https://www.openstreetmap.org/copyright) · [学校官网](https://www.upc.edu.cn/)
 - 校区名称参照学校公开资料。 [学校简介](https://www.upc.edu.cn/info/1012/1002.htm)

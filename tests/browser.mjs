@@ -116,11 +116,12 @@ try {
   const staffBrowser = await context();
   const leaderBrowser = await context();
   const studentBrowser = await context({permissions: ["geolocation"],
-    geolocation: {longitude: 120.17, latitude: 35.937, accuracy: 19}});
+    geolocation: {longitude: 120.169487, latitude: 35.942592, accuracy: 19}});
 
   const admin = await pageAt(staffBrowser, "login.html");
   const leader = await pageAt(leaderBrowser, "login.html");
   const student = await pageAt(studentBrowser, "login.html");
+  await student.locator(".login-panel").screenshot({path: path.join(artifacts, "guide-login.png")});
   assert.equal(await student.locator('input[type="file"]').count(), 0);
   await submitLogin(student, "测试甲", "999");
   await includes(student, "用户名或密码不正确");
@@ -201,7 +202,10 @@ try {
   await student.getByRole("dialog").waitFor();
   await student.getByRole("button", {name: /^是，我在校/}).click();
   await includes(student.getByRole("dialog"), "在校打卡成功");
-  await includes(student.getByRole("dialog"), "120.17000, 35.93700");
+  const libraryLocation = "唐岛湾校区 · 图书馆总馆附近";
+  await includes(student.getByRole("dialog"), libraryLocation);
+  assert.equal(await student.getByRole("dialog").getByText("本次经纬度").count(), 0);
+  await student.getByRole("dialog").screenshot({path: path.join(artifacts, "guide-student.png")});
   assert.equal(await student.getByRole("button", {name: "下载回执"}).count(), 0);
   const {attendance: studentFeed} = await (await callTasks(student, feedQuery)).json();
   const [record] = studentFeed.items;
@@ -211,6 +215,7 @@ try {
   assert.equal(record.studentId, "001");
   assert.equal(record.name, "测试甲");
   assert.equal(record.result, "present");
+  assert.equal(record.location, libraryLocation);
 
   const awayBrowser = await context();
   await awayBrowser.addInitScript(() => {
@@ -274,24 +279,38 @@ try {
     await admin.screenshot({path: path.join(artifacts, "attendance-dashboard-" + width + ".png"), fullPage: true});
   }
   await admin.setViewportSize({width: 390, height: 844});
+  await admin.locator(".panel").filter({hasText: "全年级打卡总览"}).screenshot({path: path.join(artifacts, "guide-admin.png")});
+  await admin.locator(".panel").filter({hasText: "各班打卡进度"}).screenshot({path: path.join(artifacts, "guide-admin-classes.png")});
   await admin.locator('[data-do="group-detail"][data-value="测试2401"]').click();
   await includes(admin.getByRole("dialog"), "本班报备分布");
+  await click(admin.getByRole("dialog").locator(".list-row").filter({hasText: "测试甲"}), "查看记录");
+  await includes(admin.getByRole("dialog"), libraryLocation);
+  await click(admin.getByRole("dialog"), "返回本班明细");
   await click(admin.getByRole("dialog").locator('.list-row').filter({hasText: "测试乙"}), "查看记录");
   await includes(admin.getByRole("dialog"), "在外参加活动");
   await click(admin, "关闭");
   const onlineCSV = await download(admin, "导出学生明细");
   assert.match(await fs.readFile(onlineCSV, "utf8"), /"002","离校报备"/);
-  assert.match(await fs.readFile(onlineCSV, "utf8"), /"001","在校打卡"/);
+  const adminExport = await fs.readFile(onlineCSV, "utf8");
+  assert.match(adminExport, /"001","在校打卡"/);
+  assert.ok(adminExport.includes('"打卡地点"') && adminExport.includes(libraryLocation));
   await away.reload();
   await click(away, "查看");
   await includes(awayDialog, "离校报备已提交");
 
+  await leader.getByLabel("查找学生").fill("001");
+  await click(leader, "详情");
+  await includes(leader.getByRole("dialog"), libraryLocation);
+  await leader.getByRole("dialog").screenshot({path: path.join(artifacts, "guide-leader.png")});
+  await click(leader, "关闭");
   await leader.getByLabel("查找学生").fill("002");
   await click(leader, "详情");
   await includes(leader.getByRole("dialog"), "在外参加活动");
   await click(leader, "关闭");
   const classCSV = await download(leader, "导出本班 CSV");
-  assert.match(await fs.readFile(classCSV, "utf8"), /"002","离校报备"/);
+  const leaderExport = await fs.readFile(classCSV, "utf8");
+  assert.match(leaderExport, /"002","离校报备"/);
+  assert.ok(leaderExport.includes(libraryLocation));
   await leader.evaluate(() => {
     window.showSaveFilePicker = async options => ({async createWritable() {
       return {async write(blob) { window.savedExport = {name: options.suggestedName, data: await blob.text()}; },
