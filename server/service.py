@@ -78,7 +78,7 @@ def person(row):
 
 def identity(db, account):
     role = account["role"]
-    profile = {"accountId": account["id"], "role": role, "username": "admin" if role == "admin" else account["display_name"]}
+    profile = {"accountId": account["id"], "role": role, "username": account["display_name"]}
     if role == "admin":
         for key, kind in (("roster", "student"), ("staff", "leader")):
             profile[key] = [person(row) for row in db.execute("SELECT * FROM accounts WHERE role=? ORDER BY class_name,student_id", (kind,))]
