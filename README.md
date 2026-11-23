@@ -46,7 +46,7 @@ python server/service.py --db "../private/attendance/attendance.sqlite3" --peppe
 
 ## 正式办理
 
-1. **管理端准备。** 使用管理员账户登录，核对自动加载的名单。管理端可以用 UTF-8 CSV 更新本机任务名单。服务端登录账号由后台名册管理。按任务启用的校区分别配置经校方确认的校园围栏。各校区分别导入 WGS 84 的 GeoJSON Polygon 或 MultiPolygon，允许以 Feature 包装。
+1. **管理端准备。** 使用管理员账户登录，核对自动加载的名单。管理端可以用 UTF-8 CSV 更新本机任务名单。服务端登录账号由后台名册管理。新建任务默认勾选唐岛湾校区，围栏允许边界外延 20 米，定位误差上限为 70 米。其他校区使用 WGS 84 的 GeoJSON Polygon 或 MultiPolygon，允许以 Feature 包装。
 2. **发布。** 新建任务，设置北京时间、适用班级和允许校区，确认应报人数后发布。将任务包发到班群，将每班的应报名单私发给该班负责人。延长截止时间和撤销任务均会生成新版本，需要重新转发。
 3. **填报。** 学生登录后导入任务包。在校路线使用手机定位，离校路线填写原因。个人回执下载后私发本班负责人。
 4. **汇总。** 负责人导入任务、应报名单和学生回执，核对班级报备分布，导出班级统计给管理员。只有需要管理员单独处理的事项使用「报送特殊情况」。
@@ -71,4 +71,5 @@ python server/service.py --db "../private/attendance/attendance.sqlite3" --peppe
 
 - 徽标来自学院官网页头。 [青岛软件学院、计算机科学与技术学院](https://computer.upc.edu.cn/)
 - 校园夜景为图说石大中的《夜间石大》，摄影肖鸿伟。 [靓丽风景](https://photo.upc.edu.cn/jlfj.htm)
+- 唐岛湾校区定位边界取自 OpenStreetMap way 222840628（v22），由 © OpenStreetMap contributors 提供，数据按 [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/) 分发。 [边界文件](dist/assets/tangdaowan-boundary.geojson) · [学校平面图](https://upce.upc.edu.cn/2018/0404/c8300a143081/pagem.htm)
 - 校区名称参照学校公开资料。 [学校简介](https://www.upc.edu.cn/info/1012/1002.htm)

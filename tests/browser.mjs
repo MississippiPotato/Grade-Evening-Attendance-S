@@ -135,14 +135,11 @@ try {
   await upload(admin, "导入负责人 CSV", staff);
   await includes(admin, "待核对负责人 测试2402");
 
-  const fence = {name: "测试校区.geojson", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({type: "Polygon",
-    coordinates: [[[120.165, 35.934], [120.174, 35.934], [120.174, 35.941], [120.165, 35.941], [120.165, 35.934]]]}))};
-  await click(admin, "配置校区围栏");
-  await admin.getByLabel("校园边界文件").setInputFiles(fence);
-  await click(admin, "保存围栏");
-  await includes(admin, "唐岛湾校区");
+  await includes(admin, "系统预设");
+  const defaultBoundary = JSON.parse(await fs.readFile(new URL("../dist/assets/tangdaowan-boundary.geojson", import.meta.url), "utf8"));
 
   await click(admin, "新建任务");
+  assert.ok(await admin.getByRole("checkbox", {name: "唐岛湾校区", exact: true}).isChecked());
   await admin.getByLabel("任务标题").fill("多设备验收任务");
   await admin.getByLabel("任务说明").fill("请用北京时间完成报备。");
   await admin.getByLabel("开放时间（北京时间）").fill(beijingInput(Date.now() - 60000));
@@ -161,6 +158,8 @@ try {
   const otherClass = await download(admin, "下载该班应报名单");
   await click(admin, "关闭");
   const task = JSON.parse(await fs.readFile(taskFile, "utf8"));
+  assert.deepEqual(task.data.fences, [{name: "唐岛湾校区", version: defaultBoundary.properties.version,
+    buffer: 20, maxAccuracy: 70, geometry: defaultBoundary.geometry}]);
   assert.deepEqual(task.data.groups, ["测试2401", "测试2402"]);
   assert.equal(JSON.stringify(task.data).includes("测试甲"), false);
   await includes(leader, "暂无班级任务");

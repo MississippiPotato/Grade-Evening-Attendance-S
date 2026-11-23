@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {judgePosition, validateGeometry} from "../dist/assets/geo.mjs";
+import {readFileSync} from "node:fs";
+import {judgePosition, validateFence, validateGeometry} from "../dist/assets/geo.mjs";
 import {archiveTask, beijingInput, blank, classRoster, classRows, csvText, importReceipt, importRoster, importTask,
   parseCSV, readBeijing, resolveReceipt, summarize} from "../dist/assets/model.mjs";
 
@@ -18,6 +19,17 @@ test("围栏内、外、孔洞、周边、边界误差与低精度各自判断",
   assert.equal(status(120.1598, 35.936, 20), "uncertain");
   assert.equal(status(120.165, 35.936, 60), "uncertain");
   assert.throws(() => validateGeometry({type: "Polygon", coordinates: [outer.slice(0, 4)]}), /首尾/);
+});
+
+test("唐岛湾预设覆盖校内和门口，排除校外测点", () => {
+  const feature = JSON.parse(readFileSync(new URL("../dist/assets/tangdaowan-boundary.geojson", import.meta.url), "utf8"));
+  const actual = validateFence({name: feature.properties.name, version: feature.properties.version,
+    buffer: 20, maxAccuracy: 70, geometry: feature});
+  const result = (longitude, latitude, accuracy) => judgePosition([actual], {longitude, latitude, accuracy});
+  assert.equal(result(120.16533, 35.94322, 15).status, "pass");
+  assert.equal(result(120.1757398, 35.9434644, 14).status, "pass");
+  assert.equal(result(120.185, 35.946, 15).status, "outside");
+  assert.equal(result(120.1698165, 35.9430351, 71).status, "uncertain");
 });
 
 test("北京时间在不同时区保持一致，并拒绝无效日期", () => {

@@ -259,11 +259,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def static(self, path):
         root = self.server.site_dir
-        if root and re.fullmatch(r"/(?:[a-z]+\.html|assets/[a-z.-]+\.(css|mjs|webp))?", path):
+        if root and re.fullmatch(r"/(?:[a-z]+\.html|assets/[a-z.-]+\.(css|mjs|webp|geojson))?", path):
             file = root / (path.lstrip("/") or "index.html")
             if file.is_file():
                 body = file.read_bytes()
-                kind = "text/javascript" if file.suffix == ".mjs" else mimetypes.guess_type(str(file))[0]
+                kind = {".mjs": "text/javascript", ".geojson": "application/geo+json"}.get(file.suffix) or mimetypes.guess_type(str(file))[0]
                 self.send_response(200)
                 self.send_header("Content-Type", kind + ("; charset=utf-8" if file.suffix != ".webp" else ""))
                 self.send_header("Content-Length", str(len(body)))
