@@ -1,0 +1,44 @@
+# Local deployment settings
+/.openai/
+/.sites-runtime/
+/.sites-checkout*/
+
+# Private data and generated exports
+/outputs/
+/private/
+/local-data/
+attendance-accounts*/
+学生/
+班级负责人/
+*.xlsx
+*.xls
+*.csv
+管理员账户.json
+晚点名*.json
+应报名单-*.json
+撤销-*.json
+*.zip
+*.tar.gz
+
+# Secrets and local credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies, caches and tooling
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+test-results/
+playwright-report/
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# dist/ is the versioned static site.
