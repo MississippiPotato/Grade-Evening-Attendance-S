@@ -1,4 +1,4 @@
-"""Logins and the special-case inbox, served over an HTTPS reverse proxy."""
+"""Attendance API served over an HTTPS reverse proxy."""
 
 import argparse
 from contextlib import closing
@@ -248,6 +248,14 @@ class Handler(BaseHTTPRequestHandler):
                 if account["role"] != "admin":
                     raise RequestError(403, "仅管理员可更改点名任务。")
                 return 200, task_service.update(db, account, task_action.group(1), task_action.group(2), self.body(), now_iso())
+            submission = re.fullmatch(r"/tasks/([a-zA-Z0-9_-]{1,80})/(attendance|away)", path)
+            if submission and method == "POST":
+                if account["role"] != "student":
+                    raise RequestError(403, "仅学生可提交本人填报。")
+                data = self.body()
+                if submission.group(2) == "away":
+                    data["result"] = "away"
+                return 200, {"record": task_service.submit_attendance(db, account, submission.group(1), data, now_iso)}
             if path == "/special" and method == "POST":
                 if account["role"] != "leader":
                     raise RequestError(403, "仅班级负责人可报送特殊情况。")

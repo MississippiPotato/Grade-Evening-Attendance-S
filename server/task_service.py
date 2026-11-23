@@ -16,6 +16,22 @@ CREATE TABLE IF NOT EXISTS published_task_groups (
  PRIMARY KEY(task_id, class_name)
 );
 CREATE INDEX IF NOT EXISTS published_task_groups_class ON published_task_groups(class_name, task_id);
+CREATE TABLE IF NOT EXISTS away_submissions (
+ sequence INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES published_tasks(id), student_id TEXT NOT NULL,
+ class_name TEXT NOT NULL, student_name TEXT NOT NULL, revision INTEGER NOT NULL, submitted_at TEXT NOT NULL,
+ reason TEXT NOT NULL, UNIQUE(task_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS away_submissions_class ON away_submissions(class_name, sequence);
+CREATE TABLE IF NOT EXISTS attendance_submissions (
+ sequence INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES published_tasks(id), student_id TEXT NOT NULL,
+ class_name TEXT NOT NULL, student_name TEXT NOT NULL, revision INTEGER NOT NULL, submitted_at TEXT NOT NULL,
+ result TEXT NOT NULL CHECK(result IN ('away', 'present')), reason TEXT, campus TEXT, accuracy REAL,
+ UNIQUE(task_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS attendance_submissions_class ON attendance_submissions(class_name, sequence);
+INSERT OR IGNORE INTO attendance_submissions
+ (sequence,task_id,student_id,class_name,student_name,revision,submitted_at,result,reason)
+ SELECT sequence,task_id,student_id,class_name,student_name,revision,submitted_at,'away',reason FROM away_submissions;
 """
 CAMPUS_NAMES = ("唐岛湾校区", "古镇口校区", "东营科教园区")
 
@@ -118,10 +134,40 @@ def read_item(db, row, account):
     return {"task": task, "snapshots": snapshots}
 
 
-def feed(db, account, query):
-    raw = parse_qs(query).get("since", ["0"])[0]
+def feed_cursor(query, name):
+    raw = query.get(name, ["0"])[0]
     require(re.fullmatch(r"[0-9]{1,15}", raw), "同步游标无效。")
-    since = int(raw)
+    return int(raw)
+
+
+def attendance_record(row):
+    result = row["result"]
+    details = {"reason": row["reason"]} if result == "away" else {"campus": row["campus"], "accuracy": row["accuracy"]}
+    return {"id": "online-" + result + "-" + str(row["sequence"]), "taskId": row["task_id"],
+            "studentId": row["student_id"], "group": row["class_name"], "name": row["student_name"],
+            "revision": row["revision"], "submittedAt": row["submitted_at"], "result": result, **details}
+
+
+def attendance_feed(db, account, since, task_since, away_only=False):
+    sql = """SELECT * FROM attendance_submissions WHERE (sequence>? OR task_id IN
+             (SELECT id FROM published_tasks WHERE sync_version>?))"""
+    args = (since, task_since)
+    if away_only:
+        sql += " AND result='away'"
+    if account["role"] != "admin":
+        sql += " AND class_name=?"
+        args += (account["class_name"],)
+    if account["role"] == "student":
+        sql += " AND student_id=?"
+        args += (account["student_id"],)
+    rows = db.execute(sql + " ORDER BY sequence", args).fetchall()
+    return {"cursor": max(since, rows[-1]["sequence"]) if rows else since,
+            "items": [attendance_record(row) for row in rows]}
+
+
+def feed(db, account, query):
+    params = parse_qs(query)
+    since = feed_cursor(params, "since")
     db.execute("BEGIN")
     cursor = db.execute("SELECT COALESCE(MAX(sync_version),0) FROM published_tasks").fetchone()[0]
     sql = "SELECT t.* FROM published_tasks t"
@@ -131,7 +177,84 @@ def feed(db, account, query):
         args = (account["class_name"],)
     rows = db.execute(sql + " WHERE t.sync_version>? ORDER BY t.sync_version", args + (since,)).fetchall()
     items = [read_item(db, row, account) for row in rows]
-    return {"cursor": max(cursor, since), "items": items}
+    result = {"cursor": max(cursor, since), "items": items}
+    if "attendanceSince" in params:
+        result["attendance"] = attendance_feed(db, account, feed_cursor(params, "attendanceSince"), since)
+    elif "awaySince" in params:
+        result["away"] = attendance_feed(db, account, feed_cursor(params, "awaySince"), since, away_only=True)
+    return result
+
+
+def ring_distance(ring, longitude, latitude):
+    meters_per_degree = 6371008.8 * math.pi / 180
+    scale_x = meters_per_degree * math.cos(math.radians(latitude))
+    points = [((lon - longitude) * scale_x, (lat - latitude) * meters_per_degree) for lon, lat in ring]
+    inside, minimum = False, float("inf")
+    for (ax, ay), (bx, by) in zip(points, points[1:]):
+        dx, dy = bx - ax, by - ay
+        length = dx * dx + dy * dy
+        fraction = max(0, min(1, -(ax * dx + ay * dy) / length)) if length else 0
+        minimum = min(minimum, math.hypot(ax + fraction * dx, ay + fraction * dy))
+        if (ay > 0) != (by > 0) and ax - dx * ay / dy > 0:
+            inside = not inside
+    return inside, minimum
+
+
+def campus_for(fences, longitude, latitude, accuracy):
+    # Use the same signed boundary distance as the browser, including polygon holes.
+    for fence in fences:
+        if accuracy > fence["maxAccuracy"]:
+            continue
+        geometry = fence["geometry"]
+        coordinates = geometry["coordinates"]
+        for polygon in [coordinates] if geometry["type"] == "Polygon" else coordinates:
+            shell, *holes = [ring_distance(ring, longitude, latitude) for ring in polygon]
+            inside = shell[0] and not any(hole[0] for hole in holes)
+            distance = min(item[1] for item in [shell] + holes)
+            if (distance if inside else -distance) + fence["buffer"] >= accuracy:
+                return fence["name"]
+    return None
+
+
+def submission_details(task, raw):
+    if raw.get("result") == "away":
+        reason = text(raw.get("reason"), 500, "请填写离校原因，最多 500 字。")
+        require(not any(0xD800 <= ord(char) <= 0xDFFF for char in reason)
+                and len(reason.encode("utf-16-le")) <= 1000, "请填写有效的离校原因，最多 500 字。")
+        return "away", reason, None, None
+    require(raw.get("result") == "present", "填报类型无效。")
+    longitude, latitude, accuracy = (raw.get(key) for key in ("longitude", "latitude", "accuracy"))
+    require(number(longitude, -180, 180) and number(latitude, -90, 90)
+            and number(accuracy, 0, 1000) and accuracy > 0, "定位信息无效，请重新定位。")
+    campus = campus_for(task["fences"], longitude, latitude, accuracy)
+    require(campus, "定位范围或精度未通过校验，请重新定位。")
+    return "present", None, campus, accuracy
+
+
+def submit_attendance(db, account, identifier, raw, clock):
+    group, student_id = account["class_name"], account["student_id"]
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("""SELECT t.payload,g.students FROM published_tasks t
+                         JOIN published_task_groups g ON g.task_id=t.id
+                         WHERE t.id=? AND g.class_name=?""", (identifier, group)).fetchone()
+        require(row, "这项线上任务不适用于你的班级。", 404)
+        student = next((item for item in json.loads(row["students"]) if item["id"] == student_id), None)
+        require(student, "你的学号不在该任务的应报名单内。", 403)
+        existing = db.execute("SELECT * FROM attendance_submissions WHERE task_id=? AND student_id=?",
+                              (identifier, student_id)).fetchone()
+        if existing:
+            return attendance_record(existing)
+        task = json.loads(row["payload"])
+        now = clock()
+        require(task["mode"] == "published" and task["opens"] <= now < task["due"],
+                "该任务当前不接受报备，请刷新任务列表。", 409)
+        details = submission_details(task, raw)
+        result = db.execute("""INSERT INTO attendance_submissions
+                            (task_id,student_id,class_name,student_name,revision,submitted_at,result,reason,campus,accuracy)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)""", (identifier, student_id, group, student["name"],
+                                                              task["revision"], now, *details))
+        return attendance_record(db.execute("SELECT * FROM attendance_submissions WHERE sequence=?", (result.lastrowid,)).fetchone())
 
 
 def next_version(db):

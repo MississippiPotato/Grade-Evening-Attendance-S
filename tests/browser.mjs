@@ -22,7 +22,9 @@ const errors = [];
 let sequence = 0;
 
 async function context(options = {}) {
-  return browser.newContext({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, ...options});
+  const scope = await browser.newContext({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, ...options});
+  await scope.addInitScript(() => { window.showSaveFilePicker = undefined; });
+  return scope;
 }
 
 async function pageAt(scope, target) {
@@ -182,7 +184,13 @@ try {
   assert.deepEqual(leaderTasks[0].snapshots.map(snapshot => snapshot.group), ["测试2401"]);
   await includes(leader.locator("#student-rows"), "测试甲");
   await includes(student, "多设备验收任务");
-  await includes(student, "打卡回执会自动使用以上学籍信息。");
+  await includes(student, "填报会自动使用以上学籍信息。");
+  await includes(admin, "全年级打卡总览");
+  await includes(admin, "各班打卡进度");
+  const attendancePath = "/" + task.id + "/attendance";
+  const feedQuery = "?attendanceSince=0";
+  assert.equal((await callTasks(student, attendancePath, {result: "present", longitude: 120.22,
+    latitude: 35.98, accuracy: 19})).status, 400);
 
   await click(leader, "提醒");
   const text = await leader.getByLabel("提醒文案").inputValue();
@@ -194,12 +202,15 @@ try {
   await student.getByRole("button", {name: /^是，我在校/}).click();
   await includes(student.getByRole("dialog"), "在校打卡成功");
   await includes(student.getByRole("dialog"), "120.17000, 35.93700");
-  const receipt = await download(student, "下载回执");
-  const record = JSON.parse(await fs.readFile(receipt, "utf8"));
-  assert.equal(record.data.accuracy, 19);
-  assert.equal(record.data.longitude, undefined);
-  assert.equal(record.data.studentId, "001");
-  assert.equal(record.data.name, "测试甲");
+  assert.equal(await student.getByRole("button", {name: "下载回执"}).count(), 0);
+  const {attendance: studentFeed} = await (await callTasks(student, feedQuery)).json();
+  const [record] = studentFeed.items;
+  assert.equal(record.accuracy, 19);
+  assert.equal(record.longitude, undefined);
+  assert.equal(record.latitude, undefined);
+  assert.equal(record.studentId, "001");
+  assert.equal(record.name, "测试甲");
+  assert.equal(record.result, "present");
 
   const awayBrowser = await context();
   await awayBrowser.addInitScript(() => {
@@ -233,19 +244,66 @@ try {
   await away.getByRole("button", {name: /^否，我不在校/}).click();
   await away.getByLabel("离校原因").fill("在外参加活动\n次日返校。");
   await click(away, "确认报备");
-  await includes(away.getByRole("dialog"), "离校报备已保存");
-  const second = await download(away, "下载回执");
+  await includes(awayDialog, "离校报备已提交");
+  assert.equal(await awayDialog.getByRole("button", {name: "下载回执"}).count(), 0);
+  assert.equal((await callTasks(leader, attendancePath, {result: "away", reason: "无权提交"})).status, 403);
+  assert.equal((await callTasks(away, "/only-other-class/attendance", {result: "away", reason: "不属于此班"})).status, 404);
+  const retry = await callTasks(away, attendancePath, {result: "present", longitude: 120.17, latitude: 35.937, accuracy: 20});
+  const {record: onlineAway} = await retry.json();
+  assert.equal(onlineAway.studentId, "002");
+  assert.equal(onlineAway.reason, "在外参加活动\n次日返校。");
+  assert.deepEqual((await (await callTasks(student, feedQuery)).json()).attendance.items, [record]);
+  assert.deepEqual((await (await callTasks(away, feedQuery)).json()).attendance.items, [onlineAway]);
+  const otherLogin = await fetch(base + "/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({username: "测试丙", password: "003"})});
+  const {token: otherToken} = await otherLogin.json();
+  const otherFeed = await fetch(base + "/api/tasks" + feedQuery, {headers: {Authorization: "Bearer " + otherToken}});
+  assert.deepEqual((await otherFeed.json()).attendance.items, []);
+  await Promise.all([
+    includes(leader, "完成报备率 100%"),
+    includes(admin.locator(".chart-legend"), "离校报备 1"),
+  ]);
+  const rateBar = admin.getByRole("progressbar", {name: "测试2401在校打卡率"});
+  assert.equal(await rateBar.getAttribute("value"), "1");
+  assert.equal(await rateBar.getAttribute("max"), "2");
+  await includes(admin.locator(".stats"), "33.3%");
+  await includes(admin.locator(".stats"), "66.7%");
+  for (const width of [320, 390, 1440]) {
+    await admin.setViewportSize({width, height: 844});
+    assert.ok(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await admin.screenshot({path: path.join(artifacts, "attendance-dashboard-" + width + ".png"), fullPage: true});
+  }
+  await admin.setViewportSize({width: 390, height: 844});
+  await admin.locator('[data-do="group-detail"][data-value="测试2401"]').click();
+  await includes(admin.getByRole("dialog"), "本班报备分布");
+  await click(admin.getByRole("dialog").locator('.list-row').filter({hasText: "测试乙"}), "查看记录");
+  await includes(admin.getByRole("dialog"), "在外参加活动");
+  await click(admin, "关闭");
+  const onlineCSV = await download(admin, "导出学生明细");
+  assert.match(await fs.readFile(onlineCSV, "utf8"), /"002","离校报备"/);
+  assert.match(await fs.readFile(onlineCSV, "utf8"), /"001","在校打卡"/);
+  await away.reload();
+  await click(away, "查看");
+  await includes(awayDialog, "离校报备已提交");
 
-  await upload(leader, "导入文件", [receipt, second]);
-  await includes(leader, "完成报备率 100%");
-  await upload(leader, "导入文件", receipt);
-  await includes(leader, "完成报备率 100%");
   await leader.getByLabel("查找学生").fill("002");
   await click(leader, "详情");
   await includes(leader.getByRole("dialog"), "在外参加活动");
   await click(leader, "关闭");
   const classCSV = await download(leader, "导出本班 CSV");
   assert.match(await fs.readFile(classCSV, "utf8"), /"002","离校报备"/);
+  await leader.evaluate(() => {
+    window.showSaveFilePicker = async options => ({async createWritable() {
+      return {async write(blob) { window.savedExport = {name: options.suggestedName, data: await blob.text()}; },
+        async close() {}};
+    }});
+  });
+  await click(leader, "导出本班 CSV");
+  await leader.waitForFunction(() => window.savedExport);
+  const localExport = await leader.evaluate(() => window.savedExport);
+  assert.match(localExport.name, /\.csv$/);
+  assert.match(localExport.data, /"002","离校报备"/);
+  await leader.evaluate(() => { window.showSaveFilePicker = undefined; });
   await includes(leader, "本班报备分布");
   await click(leader, "报送特殊情况");
   await leader.getByLabel("标题", {exact: true}).fill("定位需要复核");
@@ -258,17 +316,15 @@ try {
   await includes(admin.getByRole("dialog"), "已核对本班回执。");
   await click(admin, "关闭");
   const reportFile = await download(leader, "导出班级统计");
-  await upload(admin, "导入班级统计", reportFile);
-  await includes(admin, "汇总范围完成率");
-  await includes(admin, "已汇总班级报备分布");
-  await includes(admin, "1/2");
+  await upload(admin, "导入历史统计", reportFile);
+  await includes(admin, "全年级打卡总览");
   assert.equal(await admin.getByText("未报送", {exact: true}).count(), 0);
-  await click(admin, "详情");
+  await admin.locator('[data-do="group-detail"][data-value="测试2402"]').click();
   await includes(admin.getByRole("dialog"), "统计详情");
   await click(admin, "关闭");
   const summary = await download(admin, "导出年级汇总");
-  assert.match(await fs.readFile(summary, "utf8"), /"测试2401"/);
-  assert.doesNotMatch(await fs.readFile(summary, "utf8"), /测试2402|未报送/);
+  assert.match(await fs.readFile(summary, "utf8"), /"测试2401","2","1","1","0","0","100%"/);
+  assert.match(await fs.readFile(summary, "utf8"), /"测试2402","1","0","0","1","0","0%"/);
 
   await click(admin, "延长截止");
   await click(admin, "保存新版本");
@@ -282,12 +338,15 @@ try {
   const cancellation = (await (await callTasks(student)).json()).items[0].task;
   assert.equal(cancellation.mode, "revoked");
   assert.equal(cancellation.revision, 3);
+  assert.equal((await fetch(base + "/api/tasks" + attendancePath, {method: "POST",
+    headers: {Authorization: "Bearer " + otherToken, "Content-Type": "application/json"},
+    body: JSON.stringify({result: "away", reason: "任务已撤销"})})).status, 409);
   await click(student, "关闭");
   await click(student, "刷新任务");
   await includes(student, "任务已撤销");
   await click(student, "本机数据");
   const backup = await download(student, "下载本机备份");
-  assert.equal(JSON.parse(await fs.readFile(backup, "utf8")).data.workspace.receipts.length, 1);
+  assert.equal(JSON.parse(await fs.readFile(backup, "utf8")).data.workspace.onlineAttendance.length, 1);
   await student.getByLabel("可清理的已结束任务").selectOption(task.id);
   await click(student, "选择清理任务");
   await click(student, "确认清理");
